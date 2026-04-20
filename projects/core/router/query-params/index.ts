@@ -4,14 +4,21 @@ import { ActivatedRoute, Router, type NavigationExtras, type Params } from '@ang
 import { proxySignal, setupContext } from '@signality/core/internal';
 import type { WithInjector } from '@signality/core/types';
 
-export type QueryParamsOptions<T extends Params | string> = CreateSignalOptions<T> &
-  WithInjector &
-  Pick<NavigationExtras, 'replaceUrl'>;
+export type QueryParamsTransform<T extends Params | (string | null), R = T> = {
+  get?: (value: T | null) => R;
+  set?: (value: R) => T | null;
+};
 
-export function queryParams(
+export type QueryParamsOptions<T extends Params | (string | null)> = CreateSignalOptions<T> &
+  WithInjector &
+  Pick<NavigationExtras, 'replaceUrl'> & {
+    transform?: QueryParamsTransform<T>['get'] | QueryParamsTransform<T>;
+  };
+
+export function queryParams<T extends string | null>(
   key: string,
-  options?: QueryParamsOptions<string>
-): WritableSignal<string | null>;
+  options?: QueryParamsOptions<T>
+): WritableSignal<T>;
 
 export function queryParams<T extends Params = Params>(
   options?: QueryParamsOptions<T>
@@ -40,9 +47,9 @@ export function queryParams<T extends Params = Params>(
  * ```
  */
 export function queryParams(
-  keyOrOptions?: string | QueryParamsOptions<Params> | QueryParamsOptions<string>,
-  options?: QueryParamsOptions<Params> | QueryParamsOptions<string>
-): WritableSignal<Params | string | null> {
+  keyOrOptions?: string | QueryParamsOptions<Params | (string | null)>,
+  options?: QueryParamsOptions<Params | (string | null)>
+): WritableSignal<Params | (string | null)> {
   const { key, options: resolvedOptions } = parseQueryParamsArgs(keyOrOptions, options);
   const { runInContext } = setupContext(resolvedOptions?.injector, queryParams);
 
@@ -50,8 +57,9 @@ export function queryParams(
     const router = inject(Router);
     const { queryParams: paramsChanges, snapshot } = inject(ActivatedRoute);
 
-    const readonlyQueryParams = toSignal(paramsChanges, { initialValue: snapshot.queryParams });
+    const { get, set } = parseTransform(resolvedOptions?.transform);
 
+    const readonlyQueryParams = toSignal(paramsChanges, { initialValue: snapshot.queryParams });
     const queryParams = linkedSignal(() => {
       const params = readonlyQueryParams();
       if (key) return key in params ? (params[key] as string) : null;
@@ -59,8 +67,9 @@ export function queryParams(
     });
 
     return proxySignal(queryParams, {
+      get: source => get(source()),
       set: async (value, source) => {
-        const params = key ? { [key]: value as string } : (value as Params);
+        const params = key ? { [key]: set(value) as string } : (set(value) as Params);
         const succeeded = await router.navigate([], {
           queryParams: params,
           queryParamsHandling: 'merge',
@@ -74,10 +83,21 @@ export function queryParams(
 }
 
 function parseQueryParamsArgs(
-  keyOrOptions?: string | QueryParamsOptions<Params> | QueryParamsOptions<string>,
-  options?: QueryParamsOptions<Params> | QueryParamsOptions<string>
+  keyOrOptions?: string | QueryParamsOptions<Params | (string | null)>,
+  options?: QueryParamsOptions<Params | (string | null)>
 ) {
   return typeof keyOrOptions === 'string'
     ? { key: keyOrOptions, options }
     : { options: keyOrOptions };
+}
+
+function parseTransform<T extends Params | (string | null), R = T>(
+  transform?: QueryParamsOptions<T>['transform']
+) {
+  const identityGet = ((v: any) => v) as Required<QueryParamsTransform<T, R>>['get'];
+  const identitySet = ((v: any) => v) as Required<QueryParamsTransform<T, R>>['set'];
+  if (typeof transform === 'function') return { get: transform, set: identitySet };
+  else if (transform) {
+    return { get: transform.get ?? identityGet, set: transform.set ?? identitySet };
+  } else return { get: identityGet, set: identitySet };
 }
